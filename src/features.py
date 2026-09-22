@@ -35,3 +35,55 @@ def adicionar_seeds(confrontos, seeds, *, permitir_ausentes=False):
         raise ValueError("Há jogos sem seed correspondente para um dos times.")
     resultado["SeedDif"] = resultado["SeedA"] - resultado["SeedB"]
     return resultado
+
+
+def calcular_winrate(resultados_regulares):
+    """Vitórias / jogos por Season e TeamID, apenas da temporada regular.
+
+    Recebe RegularSeasonCompactResults, nunca resultados do torneio NCAA.
+    O total da temporada serve para previsões feitas após seu encerramento.
+    """
+    colunas = ["Season", "WTeamID", "LTeamID"]
+    if resultados_regulares.empty or resultados_regulares[colunas].isna().any().any():
+        raise ValueError("Informe jogos regulares não vazios, com temporada e times.")
+    if resultados_regulares["WTeamID"].eq(resultados_regulares["LTeamID"]).any():
+        raise ValueError("Um time não pode enfrentar a si mesmo.")
+    vitorias = resultados_regulares[["Season", "WTeamID"]].rename(
+        columns={"WTeamID": "TeamID"}
+    ).assign(Vitoria=1)
+    derrotas = resultados_regulares[["Season", "LTeamID"]].rename(
+        columns={"LTeamID": "TeamID"}
+    ).assign(Vitoria=0)
+    participacoes = pd.concat([vitorias, derrotas], ignore_index=True)
+    resumo = participacoes.groupby(["Season", "TeamID"], as_index=False).agg(
+        Vitorias=("Vitoria", "sum"), Jogos=("Vitoria", "size")
+    )
+    resumo["WinRate"] = resumo["Vitorias"] / resumo["Jogos"]
+    return resumo
+
+
+def adicionar_winrate(confrontos, winrates, *, permitir_ausentes=False):
+    """Cria WinRateDiff; as taxas individuais são apenas intermediárias."""
+    taxas = winrates[["Season", "TeamID", "WinRate"]].copy()
+    if taxas[["Season", "TeamID"]].isna().any().any():
+        raise ValueError("Win rate sem temporada ou time.")
+    if taxas.duplicated(["Season", "TeamID"]).any():
+        raise ValueError("Win rate duplicado por temporada e time.")
+    if not pd.api.types.is_numeric_dtype(taxas["WinRate"]) or not taxas["WinRate"].between(0, 1).all():
+        raise ValueError("Win rates devem ser números entre 0 e 1.")
+    if confrontos[["Season", "TeamA", "TeamB"]].isna().any().any():
+        raise ValueError("Confronto sem temporada ou time.")
+    resultado = confrontos.drop(
+        columns=["WinRateA", "WinRateB", "WinRateDiff"], errors="ignore"
+    ).copy()
+    for lado in ["A", "B"]:
+        taxas_lado = taxas.rename(columns={"TeamID": f"Team{lado}", "WinRate": f"WinRate{lado}"})
+        resultado = resultado.merge(
+            taxas_lado, on=["Season", f"Team{lado}"], how="left",
+            validate="many_to_one", sort=False,
+        )
+    resultado.index = confrontos.index
+    if not permitir_ausentes and resultado[["WinRateA", "WinRateB"]].isna().any().any():
+        raise ValueError("Há confrontos sem win rate para um dos times.")
+    resultado["WinRateDiff"] = resultado["WinRateA"] - resultado["WinRateB"]
+    return resultado.drop(columns=["WinRateA", "WinRateB"])
