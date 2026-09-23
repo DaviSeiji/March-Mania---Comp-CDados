@@ -1,4 +1,0 @@
-Modelo,MediaLogisticBrier,MelhorTrial,Tentativas,Parametros
-XGBoost,0.06982085421732384,29,30,"{""random_state"": 42, ""n_jobs"": 2, ""objective"": ""reg:squarederror"", ""tree_method"": ""hist"", ""n_estimators"": 350, ""max_depth"": 1, ""learning_rate"": 0.015533475780068709, ""min_child_weight"": 28.39153426673116, ""subsample"": 0.9278170389008983, ""colsample_bytree"": 1.0, ""reg_alpha"": 0.0005319035315579878, ""reg_lambda"": 23.634061077276915, ""gamma"": 3.1955045490327145}"
-Random Forest,0.0713975003431827,28,30,"{""random_state"": 42, ""n_jobs"": 2, ""n_estimators"": 150, ""max_depth"": 4, ""min_samples_leaf"": 3, ""max_features"": 0.5, ""max_samples"": 0.7047788912373731}"
-Regressão linear,0.07418743848556919,0,2,"{""fit_intercept"": true}"

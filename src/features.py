@@ -1,6 +1,7 @@
 """Features compartilhadas pelos jogos históricos e pela submissão."""
 
 import pandas as pd
+from numbers import Integral
 
 
 def adicionar_seeds(confrontos, seeds, *, permitir_ausentes=False):
@@ -37,24 +38,38 @@ def adicionar_seeds(confrontos, seeds, *, permitir_ausentes=False):
     return resultado
 
 
-def calcular_winrate(resultados_regulares):
+def calcular_winrate(resultados_regulares, *, janela=None):
     """Vitórias / jogos por Season e TeamID, apenas da temporada regular.
 
     Recebe RegularSeasonCompactResults, nunca resultados do torneio NCAA.
-    O total da temporada serve para previsões feitas após seu encerramento.
+    janela=None usa todos os jogos; um inteiro positivo usa os últimos N por
+    DayNum de cada time/temporada. Se houver menos de N, usa os disponíveis.
+    Jogos registra o denominador efetivamente usado. A taxa serve para prever
+    o torneio após o encerramento dos jogos regulares fornecidos.
     """
+    if janela is not None and (
+        isinstance(janela, bool) or not isinstance(janela, Integral) or janela < 1
+    ):
+        raise ValueError("janela deve ser um inteiro positivo ou None (todos os jogos).")
     colunas = ["Season", "WTeamID", "LTeamID"]
+    if janela is not None:
+        colunas.append("DayNum")
     if resultados_regulares.empty or resultados_regulares[colunas].isna().any().any():
         raise ValueError("Informe jogos regulares não vazios, com temporada e times.")
     if resultados_regulares["WTeamID"].eq(resultados_regulares["LTeamID"]).any():
         raise ValueError("Um time não pode enfrentar a si mesmo.")
-    vitorias = resultados_regulares[["Season", "WTeamID"]].rename(
+    extras = ["DayNum"] if janela is not None else []
+    vitorias = resultados_regulares[["Season", "WTeamID", *extras]].rename(
         columns={"WTeamID": "TeamID"}
     ).assign(Vitoria=1)
-    derrotas = resultados_regulares[["Season", "LTeamID"]].rename(
+    derrotas = resultados_regulares[["Season", "LTeamID", *extras]].rename(
         columns={"LTeamID": "TeamID"}
     ).assign(Vitoria=0)
     participacoes = pd.concat([vitorias, derrotas], ignore_index=True)
+    if janela is not None:
+        participacoes = participacoes.sort_values(
+            ["Season", "TeamID", "DayNum"], kind="stable",
+        ).groupby(["Season", "TeamID"], sort=False).tail(janela)
     resumo = participacoes.groupby(["Season", "TeamID"], as_index=False).agg(
         Vitorias=("Vitoria", "sum"), Jogos=("Vitoria", "size")
     )
