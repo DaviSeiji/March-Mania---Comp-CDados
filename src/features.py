@@ -1,6 +1,7 @@
 """Features compartilhadas pelos jogos históricos e pela submissão."""
 
 import pandas as pd
+import numpy as np
 from numbers import Integral
 
 
@@ -102,3 +103,128 @@ def adicionar_winrate(confrontos, winrates, *, permitir_ausentes=False):
         raise ValueError("Há confrontos sem win rate para um dos times.")
     resultado["WinRateDiff"] = resultado["WinRateA"] - resultado["WinRateB"]
     return resultado.drop(columns=["WinRateA", "WinRateB"])
+
+
+def _participacoes_pre_torneio(resultados_regulares, limites_daynum):
+    """Valida o recorte e transforma cada jogo regular em duas participações."""
+    colunas = ["Season", "DayNum", "WTeamID", "LTeamID", "WScore", "LScore"]
+    faltantes = set(colunas) - set(resultados_regulares.columns)
+    if faltantes:
+        raise ValueError(f"Colunas ausentes nos jogos regulares: {sorted(faltantes)}")
+    jogos = resultados_regulares[colunas].copy()
+    if jogos.empty or not all(pd.api.types.is_numeric_dtype(jogos[c]) for c in colunas):
+        raise ValueError("Informe jogos regulares não vazios com valores numéricos.")
+    if not np.isfinite(jogos.to_numpy(dtype=float)).all():
+        raise ValueError("Há valores ausentes ou infinitos nos jogos regulares.")
+    if (jogos["WTeamID"] == jogos["LTeamID"]).any():
+        raise ValueError("Um time não pode enfrentar a si mesmo.")
+    if not (jogos["WScore"] > jogos["LScore"]).all() or (jogos[["WScore", "LScore"]] < 0).any().any():
+        raise ValueError("Placares inválidos nos jogos regulares.")
+    limites = jogos["Season"].map(dict(limites_daynum))
+    if limites.isna().any() or not np.isfinite(limites.to_numpy(dtype=float)).all():
+        raise ValueError("Falta um limite DayNum válido para alguma temporada.")
+    if not (jogos["DayNum"] < limites).all():
+        raise ValueError("Há jogos no início do torneio ou depois dele; use somente jogos pré-torneio.")
+    chaves = jogos.assign(
+        TeamA=jogos[["WTeamID", "LTeamID"]].min(axis=1),
+        TeamB=jogos[["WTeamID", "LTeamID"]].max(axis=1),
+    )
+    if chaves.duplicated(["Season", "DayNum", "TeamA", "TeamB"]).any():
+        raise ValueError("Há jogos duplicados na temporada regular.")
+    vencedores = jogos.rename(columns={
+        "WTeamID": "TeamID", "LTeamID": "OpponentID",
+        "WScore": "PointsFor", "LScore": "PointsAgainst",
+    }).assign(Vitoria=1)
+    perdedores = jogos.rename(columns={
+        "LTeamID": "TeamID", "WTeamID": "OpponentID",
+        "LScore": "PointsFor", "WScore": "PointsAgainst",
+    }).assign(Vitoria=0)
+    return pd.concat([vencedores, perdedores], ignore_index=True)
+
+
+def _opp_winrate(participacoes, winrates):
+    adversarios = winrates[["Season", "TeamID", "WinRate"]].rename(
+        columns={"TeamID": "OpponentID", "WinRate": "OpponentWinRate"}
+    )
+    tabela = participacoes.merge(
+        adversarios, on=["Season", "OpponentID"], how="left", validate="many_to_one",
+    )
+    if tabela["OpponentWinRate"].isna().any():
+        raise ValueError("Falta win rate para algum adversário na mesma temporada.")
+    return tabela.groupby(["Season", "TeamID"], as_index=False).agg(
+        OppWinRate=("OpponentWinRate", "mean"),
+    )
+
+
+def calcular_opp_winrate(resultados_regulares, *, limites_daynum):
+    """Média dos win rates completos dos adversários, ponderada por partida.
+
+    Inclui os jogos contra o próprio time no win rate do adversário. Reencontros
+    contam novamente. Não é uma média por adversário distinto nem leave-one-out.
+    limites_daynum mapeia Season para o primeiro dia proibido (limite exclusivo).
+    """
+    participacoes = _participacoes_pre_torneio(resultados_regulares, limites_daynum)
+    taxas = participacoes.groupby(["Season", "TeamID"], as_index=False).agg(
+        WinRate=("Vitoria", "mean"),
+    )
+    return _opp_winrate(participacoes, taxas)
+
+
+def calcular_estatisticas_agregadas(resultados_regulares, *, limites_daynum):
+    """WinRate, pontos feitos/sofridos e força dos adversários por Season/TeamID.
+
+    Recebe exclusivamente RegularSeasonCompactResults pré-torneio. Rejeita datas
+    fora do recorte em vez de descartá-las silenciosamente. Inclui Jogos para auditoria.
+    """
+    participacoes = _participacoes_pre_torneio(resultados_regulares, limites_daynum)
+    resumo = participacoes.groupby(["Season", "TeamID"], as_index=False).agg(
+        Vitorias=("Vitoria", "sum"), Jogos=("Vitoria", "size"),
+        AvgPointsFor=("PointsFor", "mean"),
+        AvgPointsAgainst=("PointsAgainst", "mean"),
+    )
+    resumo["WinRate"] = resumo["Vitorias"] / resumo["Jogos"]
+    return resumo.merge(_opp_winrate(participacoes, resumo), on=["Season", "TeamID"], validate="one_to_one")
+
+
+def adicionar_estatisticas(confrontos, estatisticas, *, permitir_ausentes=False):
+    """Cria as quatro diferenças A - B; as estatísticas individuais são temporárias.
+
+    Ausências são aceitas somente quando explicitadas e o confronto tem ID de
+    sample e pelo menos uma seed ausente. Nunca libera ausências entre participantes.
+    """
+    nomes = ["WinRate", "AvgPointsFor", "AvgPointsAgainst", "OppWinRate"]
+    stats = estatisticas[["Season", "TeamID", *nomes]].copy()
+    if stats[["Season", "TeamID"]].isna().any().any() or stats.duplicated(["Season", "TeamID"]).any():
+        raise ValueError("Estatísticas com chave ausente ou duplicada por temporada/time.")
+    if not all(pd.api.types.is_numeric_dtype(stats[n]) for n in nomes):
+        raise ValueError("As estatísticas devem ser numéricas.")
+    if not np.isfinite(stats[nomes].to_numpy(dtype=float)).all():
+        raise ValueError("Estatísticas ausentes ou infinitas.")
+    if not stats["WinRate"].between(0, 1).all() or not stats["OppWinRate"].between(0, 1).all():
+        raise ValueError("Taxas devem estar entre 0 e 1.")
+    if (stats[["AvgPointsFor", "AvgPointsAgainst"]] < 0).any().any():
+        raise ValueError("Médias de pontos não podem ser negativas.")
+    if confrontos[["Season", "TeamA", "TeamB"]].isna().any().any() or not (confrontos["TeamA"] < confrontos["TeamB"]).all():
+        raise ValueError("Confrontos devem ter temporada e IDs válidos, com TeamA < TeamB.")
+    resultado = confrontos.drop(
+        columns=[f"{n}{s}" for n in nomes for s in ["A", "B", "Diff"]], errors="ignore",
+    ).copy()
+    for lado in ["A", "B"]:
+        tabela = stats.rename(columns={"TeamID": f"Team{lado}", **{n: f"{n}{lado}" for n in nomes}})
+        resultado = resultado.merge(tabela, on=["Season", f"Team{lado}"], how="left", validate="many_to_one", sort=False)
+    resultado.index = confrontos.index
+    individuais = [f"{n}{s}" for n in nomes for s in ["A", "B"]]
+    ausentes = resultado[individuais].isna().any(axis=1)
+    if permitir_ausentes:
+        obrigatorias = {"ID", "TemDuasSeeds", "SeedA", "SeedB"}
+        if not obrigatorias.issubset(resultado.columns) or resultado["ID"].isna().any():
+            raise ValueError("Permissão de ausentes requer confrontos preparados do sample.")
+        tem_seeds = resultado[["SeedA", "SeedB"]].notna().all(axis=1)
+        if not resultado["TemDuasSeeds"].eq(tem_seeds).all():
+            raise ValueError("Indicador TemDuasSeeds inconsistente.")
+        ausentes = ausentes & tem_seeds
+    if ausentes.any():
+        raise ValueError("Há confrontos do torneio sem estatísticas disponíveis.")
+    for nome in nomes:
+        resultado[f"{nome}Diff"] = resultado[f"{nome}A"] - resultado[f"{nome}B"]
+    return resultado.drop(columns=individuais)
