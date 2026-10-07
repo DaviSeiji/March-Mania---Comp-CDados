@@ -5,6 +5,92 @@ import numpy as np
 from numbers import Integral
 
 
+ESTATISTICAS_DETALHADAS = (
+    "FGPercentage", "ThreePointPercentage", "FTPercentage", "AssistsPerGame",
+    "OffensiveReboundsPerGame", "DefensiveReboundsPerGame", "TurnoversPerGame",
+    "StealsPerGame", "BlocksPerGame",
+)
+
+
+def calcular_estatisticas_detalhadas(resultados_regulares, *, limites_daynum):
+    """Estatísticas pré-NCAA por Season/TeamID, incluindo vitórias e derrotas.
+
+    Percentuais são acertos totais / tentativas totais (escala 0–1).
+    As demais estatísticas são médias por jogo detalhado disponível, sem ajuste
+    por prorrogação. Rejeita denominadores sazonais zero em vez de imputar taxas.
+    """
+    _participacoes_pre_torneio(resultados_regulares, limites_daynum)
+    siglas = ["FGM", "FGA", "FGM3", "FGA3", "FTM", "FTA", "Ast", "OR", "DR", "TO", "Stl", "Blk"]
+    colunas = [lado + sigla for lado in ["W", "L"] for sigla in siglas]
+    if not set(colunas).issubset(resultados_regulares.columns):
+        raise ValueError("Faltam colunas de estatísticas detalhadas.")
+    valores = resultados_regulares[colunas]
+    if not all(pd.api.types.is_numeric_dtype(valores[c]) for c in colunas):
+        raise ValueError("Estatísticas detalhadas devem ser numéricas.")
+    if not np.isfinite(valores.to_numpy(dtype=float)).all() or (valores < 0).any().any():
+        raise ValueError("Estatísticas detalhadas ausentes, infinitas ou negativas.")
+    partes = []
+    for lado in ["W", "L"]:
+        tabela = resultados_regulares[["Season", f"{lado}TeamID", *[lado + s for s in siglas]]].rename(
+            columns={f"{lado}TeamID": "TeamID", **{lado + s: s for s in siglas}},
+        )
+        for acertos, tentativas in [("FGM", "FGA"), ("FGM3", "FGA3"), ("FTM", "FTA")]:
+            if (tabela[acertos] > tabela[tentativas]).any():
+                raise ValueError("Acertos não podem exceder tentativas.")
+        partes.append(tabela)
+    grupos = pd.concat(partes, ignore_index=True).groupby(["Season", "TeamID"])
+    totais = grupos[siglas].sum()
+    resumo = grupos.size().rename("JogosDetalhados").to_frame()
+    for nome, acertos, tentativas in [
+        ("FGPercentage", "FGM", "FGA"), ("ThreePointPercentage", "FGM3", "FGA3"),
+        ("FTPercentage", "FTM", "FTA"),
+    ]:
+        if totais[tentativas].eq(0).any():
+            raise ValueError(f"Temporada/time sem tentativas para {nome}.")
+        resumo[nome] = totais[acertos] / totais[tentativas]
+    for nome, sigla in zip(ESTATISTICAS_DETALHADAS[3:], ["Ast", "OR", "DR", "TO", "Stl", "Blk"]):
+        resumo[nome] = totais[sigla] / resumo["JogosDetalhados"]
+    return resumo.reset_index()
+
+
+def adicionar_estatisticas_detalhadas(confrontos, estatisticas, *, permitir_ausentes=False):
+    """Cria as nove diferenças A − B, sem alterar os DataFrames recebidos.
+
+    Ausências explícitas apenas em pares do sample sem duas seeds.
+    """
+    nomes = list(ESTATISTICAS_DETALHADAS)
+    stats = estatisticas[["Season", "TeamID", *nomes]].copy()
+    if stats[["Season", "TeamID"]].isna().any().any() or stats.duplicated(["Season", "TeamID"]).any():
+        raise ValueError("Estatísticas detalhadas com chave ausente ou duplicada.")
+    if not all(pd.api.types.is_numeric_dtype(stats[n]) for n in nomes):
+        raise ValueError("Estatísticas detalhadas devem ser numéricas.")
+    if not np.isfinite(stats[nomes].to_numpy(dtype=float)).all() or (stats[nomes] < 0).any().any():
+        raise ValueError("Estatísticas detalhadas ausentes, infinitas ou negativas.")
+    if (stats[nomes[:3]] > 1).any().any():
+        raise ValueError("Percentuais devem estar entre 0 e 1.")
+    if confrontos[["Season", "TeamA", "TeamB"]].isna().any().any() or not (confrontos["TeamA"] < confrontos["TeamB"]).all():
+        raise ValueError("Confrontos devem ter chaves válidas e TeamA < TeamB.")
+    resultado = confrontos.drop(columns=[f"{n}{s}" for n in nomes for s in ["A", "B", "Diff"]], errors="ignore").copy()
+    for lado in ["A", "B"]:
+        tabela = stats.rename(columns={"TeamID": f"Team{lado}", **{n: f"{n}{lado}" for n in nomes}})
+        resultado = resultado.merge(tabela, on=["Season", f"Team{lado}"], how="left", validate="many_to_one", sort=False)
+    resultado.index = confrontos.index
+    individuais = [f"{n}{s}" for n in nomes for s in ["A", "B"]]
+    ausentes = resultado[individuais].isna().any(axis=1)
+    if permitir_ausentes:
+        if not {"ID", "TemDuasSeeds", "SeedA", "SeedB"}.issubset(resultado.columns) or resultado["ID"].isna().any():
+            raise ValueError("Permissão de ausentes requer confrontos preparados do sample.")
+        tem_seeds = resultado[["SeedA", "SeedB"]].notna().all(axis=1)
+        if not resultado["TemDuasSeeds"].eq(tem_seeds).all():
+            raise ValueError("Indicador TemDuasSeeds inconsistente.")
+        ausentes &= tem_seeds
+    if ausentes.any():
+        raise ValueError("Há confrontos do torneio sem estatísticas detalhadas.")
+    for nome in nomes:
+        resultado[f"{nome}Diff"] = resultado[f"{nome}A"] - resultado[f"{nome}B"]
+    return resultado.drop(columns=individuais)
+
+
 def adicionar_seeds(confrontos, seeds, *, permitir_ausentes=False):
     """Junta seeds por Season/TeamID e cria SeedDif e TemDuasSeeds.
 

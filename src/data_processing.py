@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 
-def carregar_dados(pasta, categoria, *, stage=2, incluir_regular=False):
+def carregar_dados(pasta, categoria, *, stage=2, incluir_regular=False, incluir_detalhado=False):
     """Carrega uma categoria ('M' ou 'W') e o sample do estágio escolhido."""
     categoria = categoria.upper()
     if categoria not in {"M", "W"}:
@@ -21,6 +21,8 @@ def carregar_dados(pasta, categoria, *, stage=2, incluir_regular=False):
     }
     if incluir_regular:
         arquivos["temporada_regular"] = f"{categoria}RegularSeasonCompactResults.csv"
+    if incluir_detalhado:
+        arquivos["temporada_regular_detalhada"] = f"{categoria}RegularSeasonDetailedResults.csv"
     return {nome: pd.read_csv(pasta / arquivo) for nome, arquivo in arquivos.items()}
 
 
