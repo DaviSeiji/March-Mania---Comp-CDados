@@ -228,3 +228,62 @@ def adicionar_estatisticas(confrontos, estatisticas, *, permitir_ausentes=False)
     for nome in nomes:
         resultado[f"{nome}Diff"] = resultado[f"{nome}A"] - resultado[f"{nome}B"]
     return resultado.drop(columns=individuais)
+
+
+def calcular_elo(resultados_regulares, *, limites_daynum, k=20, elo_inicial=1500):
+    """Elo final por Season/TeamID, reiniciado a cada temporada.
+
+    Apenas jogos regulares antes do limite exclusivo. Usa escala 400, sem mando
+    ou margem de pontos. Empates em DayNum preservam a ordem original do arquivo.
+    Times são inicializados ao primeiro jogo; temporadas nunca compartilham ratings.
+    """
+    if not np.isfinite(k) or k <= 0 or not np.isfinite(elo_inicial):
+        raise ValueError("K deve ser positivo e Elo inicial deve ser finito.")
+    _participacoes_pre_torneio(resultados_regulares, limites_daynum)
+    jogos = resultados_regulares.sort_values(["Season", "DayNum"], kind="stable")
+    linhas = []
+    for temporada, grupo in jogos.groupby("Season", sort=True):
+        ratings = {}
+        for jogo in grupo.itertuples(index=False):
+            vencedor, perdedor = jogo.WTeamID, jogo.LTeamID
+            rv = ratings.get(vencedor, float(elo_inicial))
+            rp = ratings.get(perdedor, float(elo_inicial))
+            esperado = 1.0 / (1.0 + 10.0 ** ((rp - rv) / 400.0))
+            delta = k * (1.0 - esperado)
+            # As duas atualizações usam os ratings anteriores à partida.
+            ratings[vencedor] = rv + delta
+            ratings[perdedor] = rp - delta
+        linhas.extend({"Season": temporada, "TeamID": time, "Elo": rating}
+                      for time, rating in sorted(ratings.items()))
+    return pd.DataFrame(linhas)
+
+
+def adicionar_elo(confrontos, elos, *, permitir_ausentes=False):
+    """Junta Elo da mesma temporada e retorna apenas EloDiff = EloA - EloB.
+
+    Ausências só são aceitas explicitamente em pares do sample sem duas seeds.
+    """
+    taxas = elos[["Season", "TeamID", "Elo"]].copy()
+    if taxas[["Season", "TeamID"]].isna().any().any() or taxas.duplicated(["Season", "TeamID"]).any():
+        raise ValueError("Elo com chave ausente ou duplicada por temporada/time.")
+    if not pd.api.types.is_numeric_dtype(taxas["Elo"]) or not np.isfinite(taxas["Elo"].to_numpy(dtype=float)).all():
+        raise ValueError("Elo deve ser numérico e finito.")
+    if confrontos[["Season", "TeamA", "TeamB"]].isna().any().any() or not (confrontos["TeamA"] < confrontos["TeamB"]).all():
+        raise ValueError("Confrontos devem ter temporada e IDs válidos, com TeamA < TeamB.")
+    resultado = confrontos.drop(columns=["EloA", "EloB", "EloDiff"], errors="ignore").copy()
+    for lado in ["A", "B"]:
+        tabela = taxas.rename(columns={"TeamID": f"Team{lado}", "Elo": f"Elo{lado}"})
+        resultado = resultado.merge(tabela, on=["Season", f"Team{lado}"], how="left", validate="many_to_one", sort=False)
+    resultado.index = confrontos.index
+    ausentes = resultado[["EloA", "EloB"]].isna().any(axis=1)
+    if permitir_ausentes:
+        if not {"ID", "TemDuasSeeds", "SeedA", "SeedB"}.issubset(resultado.columns) or resultado["ID"].isna().any():
+            raise ValueError("Permissão de ausentes requer confrontos preparados do sample.")
+        tem_seeds = resultado[["SeedA", "SeedB"]].notna().all(axis=1)
+        if not resultado["TemDuasSeeds"].eq(tem_seeds).all():
+            raise ValueError("Indicador TemDuasSeeds inconsistente.")
+        ausentes = ausentes & tem_seeds
+    if ausentes.any():
+        raise ValueError("Há confrontos do torneio sem Elo disponível.")
+    resultado["EloDiff"] = resultado["EloA"] - resultado["EloB"]
+    return resultado.drop(columns=["EloA", "EloB"])
