@@ -1,0 +1,2 @@
+# Dependência opcional do Experimento 8; mantém o restante do ambiente existente.
+h2o==3.46.0.12
