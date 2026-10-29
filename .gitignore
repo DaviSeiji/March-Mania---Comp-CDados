@@ -11,3 +11,9 @@ __pycache__/
 venv/
 
 AutogluonModels/
+
+# Checkpoints retomáveis do Experimento 11 (métricas/configurações/previsões).
+checkpoints/exp11/
+
+# Credencial local do TabPFN; nunca versionar.
+/.env.tabpfn

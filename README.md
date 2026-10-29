@@ -146,3 +146,16 @@ markdown no fim do notebook, sem participar de qualquer função de seleção.
 Não são criados diretórios de resultados ou arquivos de modelos persistentes.
 
 Referência dos estimadores: [API H2O](https://docs.h2o.ai/h2o/latest-stable/h2o-py/docs/modeling.html).
+
+## Experimento 11 — H2O AutoML vs. TabPFN
+
+[exp11_automl_tabpfn.ipynb](notebooks/features_incrementais/exp11_automl_tabpfn.ipynb)
+mantém as 14 features do Exp. 8. Descobre candidatos H2O somente antes de 2023
+(100 modelos por categoria, top 20 modelos-base) e compara com oito configurações
+TabPFN 3.5/Fast por categoria. Ambos recebem avaliações fixas em 2023–2025 e
+rankings por RMSE e Logistic Brier ponderados pela similaridade com 2026.
+
+TabPFN exige CUDA por padrão. O piloto mede tempo/memória; o orçamento é configurável
+e os checkpoints locais permitem retomar buscas e avaliações concluídas. Até 12
+submissions combinam Top1/2/3 masculino e feminino, sem sigmoid nas margens.
+Instalação, limitações e execução: [docs/exp11.md](docs/exp11.md).

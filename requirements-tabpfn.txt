@@ -1,0 +1,4 @@
+# Instale primeiro torch com CUDA (instruções em docs/exp11.md).
+# TabPFN 9 oferece ModelVersion.V3_5 e V3_5_FAST; a API é verificada no notebook.
+tabpfn>=9.0,<10
+psutil>=5.9
