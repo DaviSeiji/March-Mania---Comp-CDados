@@ -1,5 +1,6 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+from types import ModuleType
 
 import numpy as np
 import pandas as pd
@@ -7,6 +8,38 @@ import pandas as pd
 from src.automl_h2o import criar_folds_temporadas, avaliar_temporadas_h2o, treinar_automl, AdaptadorH2O
 from src.metrics import logistic_brier
 from src.submission import prever_confrontos
+
+
+class ExclusoesAutoMLTest(unittest.TestCase):
+    def test_dl_opcional_sem_alterar_padrao_exp8(self):
+        backend = MagicMock()
+        aml = MagicMock()
+        aml.leader.model_id = 'modelo'
+        aml.leader.algo = 'glm'
+        aml.leader._model_json = {'output': {'model_category': 'Regression'}}
+        aml.leaderboard.as_data_frame.return_value = pd.DataFrame({'model_id': ['modelo'], 'rmse': [1.]})
+        aml.event_log.as_data_frame.return_value = pd.DataFrame()
+        automl_module = ModuleType('h2o.automl')
+        automl_module.H2OAutoML = MagicMock(return_value=aml)
+        xgb_module = ModuleType('h2o.estimators.xgboost')
+        xgb_module.H2OXGBoostEstimator = MagicMock()
+        xgb_module.H2OXGBoostEstimator.available.return_value = False
+        tabela = pd.DataFrame({'Season': range(2010, 2016), 'X': range(6), 'Target': range(6)})
+        with patch.dict('sys.modules', {'h2o.automl': automl_module, 'h2o.estimators.xgboost': xgb_module}), \
+             patch('src.automl_h2o._h2o', return_value=backend), \
+             patch('src.automl_h2o._chaves_h2o', return_value=set()):
+            treinar_automl(tabela, features=['X'], ano_previsao=2021)
+            self.assertEqual(automl_module.H2OAutoML.call_args.kwargs['exclude_algos'], ['DeepLearning', 'XGBoost'])
+            treinar_automl(tabela, features=['X'], ano_previsao=2021, exclude_algos=[])
+            self.assertEqual(automl_module.H2OAutoML.call_args.kwargs['exclude_algos'], ['XGBoost'])
+            self.assertEqual(aml.train.call_args.kwargs['fold_column'], 'FoldInterno')
+            treinar_automl(tabela, features=['X'], ano_previsao=2021, max_models=10,
+                          include_algos=['DeepLearning'], exclude_algos=None, max_runtime_secs_per_model=120)
+            config = automl_module.H2OAutoML.call_args.kwargs
+            self.assertEqual(config['include_algos'], ['DeepLearning'])
+            self.assertNotIn('exclude_algos', config)
+            self.assertEqual(config['max_runtime_secs_per_model'], 120)
+            self.assertEqual(config['max_models'], 10)
 
 
 class FoldsTemporadasTest(unittest.TestCase):

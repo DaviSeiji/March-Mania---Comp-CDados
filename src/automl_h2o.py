@@ -22,7 +22,7 @@ def _h2o():
     return h2o
 
 
-def inicializar_h2o(*, max_mem_size="4G", nthreads=2, port=54329):
+def inicializar_h2o(*, max_mem_size="4G", nthreads=2, port=54329, incluir_deep_learning=False):
     """Inicia/conecta uma vez; arquivos temporários ficam fora do repositório."""
     h2o = _h2o()
     if h2o.connection() is None or not h2o.cluster().is_running():
@@ -35,7 +35,7 @@ def inicializar_h2o(*, max_mem_size="4G", nthreads=2, port=54329):
     return {
         "h2o_version": h2o.__version__, "cluster_version": h2o.cluster().version,
         "xgboost_disponivel": disponivel,
-        "exclude_algos": ["DeepLearning"] + ([] if disponivel else ["XGBoost"]),
+        "exclude_algos": ([] if incluir_deep_learning else ["DeepLearning"]) + ([] if disponivel else ["XGBoost"]),
         "limitacao": None if disponivel else "XGBoost indisponível neste backend H2O; demais famílias habilitadas.",
     }
 
@@ -95,7 +95,8 @@ def limpar_execucao(execucao):
 
 
 def treinar_automl(treino, *, features, ano_previsao, seed=42, max_models=20,
-                   n_folds=5, exclude_algos=("DeepLearning",), nome="exp8"):
+                   n_folds=5, exclude_algos=("DeepLearning",), nome="exp8",
+                   include_algos=None, max_runtime_secs_per_model=0):
     """Treina somente dados anteriores ao ano previsto; leader escolhido por RMSE CV.
 
     Não aceita validation_frame/leaderboard_frame externos. Target é sempre real,
@@ -106,15 +107,21 @@ def treinar_automl(treino, *, features, ano_previsao, seed=42, max_models=20,
         raise ValueError("Treino deve conter apenas temporadas anteriores à previsão.")
     if not isinstance(max_models, Integral) or isinstance(max_models, bool) or max_models < 1:
         raise ValueError("max_models deve ser um inteiro positivo.")
+    if not np.isfinite(max_runtime_secs_per_model) or max_runtime_secs_per_model < 0:
+        raise ValueError("O limite por modelo deve ser finito e não negativo.")
+    if include_algos is not None and (not include_algos or exclude_algos):
+        raise ValueError("Use include_algos não vazio com exclude_algos=None.")
     folds = criar_folds_temporadas(treino["Season"], n_folds=n_folds, seed=seed)
     mapa = pd.DataFrame({"Season": treino["Season"].to_numpy(), "FoldInterno": folds.to_numpy()})
     mapa = mapa.groupby(["Season", "FoldInterno"], as_index=False).size().rename(columns={"size": "Jogos"})
     h2o = _h2o()
     from h2o.automl import H2OAutoML
     from h2o.estimators.xgboost import H2OXGBoostEstimator
-    excluidos = list(dict.fromkeys(["DeepLearning", *exclude_algos]))
-    if "XGBoost" not in excluidos and not H2OXGBoostEstimator.available():
+    excluidos = list(dict.fromkeys(exclude_algos or []))
+    if include_algos is None and "XGBoost" not in excluidos and not H2OXGBoostEstimator.available():
         excluidos.append("XGBoost")
+    selecao_algoritmos = ({"include_algos": list(include_algos)} if include_algos is not None
+                         else {"exclude_algos": excluidos})
     antes = _chaves_h2o()
     try:
         tabela = treino[[*features, "Target"]].astype(float).copy()
@@ -122,8 +129,8 @@ def treinar_automl(treino, *, features, ano_previsao, seed=42, max_models=20,
         frame = h2o.H2OFrame(tabela, column_types={**{c: "real" for c in [*features, "Target"]}, "FoldInterno": "int"})
         automl = H2OAutoML(
             seed=seed, max_models=int(max_models), max_runtime_secs=0,
-            max_runtime_secs_per_model=0, nfolds=int(n_folds),
-            sort_metric="RMSE", stopping_metric="RMSE", exclude_algos=excluidos,
+            max_runtime_secs_per_model=max_runtime_secs_per_model, nfolds=int(n_folds),
+            sort_metric="RMSE", stopping_metric="RMSE", **selecao_algoritmos,
             keep_cross_validation_models=False, keep_cross_validation_predictions=False,
             keep_cross_validation_fold_assignment=False,
             project_name=f"{nome}_{uuid4().hex[:12]}", verbosity="warn",
@@ -141,6 +148,7 @@ def treinar_automl(treino, *, features, ano_previsao, seed=42, max_models=20,
         return {
             "automl": automl, "leader": leader, "leaderboard": leaderboard,
             "eventos": eventos, "folds": mapa, "exclude_algos": excluidos,
+            "include_algos": list(include_algos) if include_algos is not None else None,
             "model_id": leader.model_id, "algoritmo": leader.algo,
             "rmse_cv": float(leaderboard.iloc[0]["rmse"]),
             "chaves_h2o": sorted(_chaves_h2o() - antes),
@@ -180,7 +188,8 @@ class AdaptadorH2O:
 
 
 def avaliar_temporadas_h2o(dados, temporadas, *, features, seed=42, max_models=20,
-                           n_folds=5, exclude_algos=("DeepLearning",)):
+                           n_folds=5, exclude_algos=("DeepLearning",), nome="exp8",
+                           include_algos=None, max_runtime_secs_per_model=0):
     """Avalia leaders internos, separando M/W; média simples dos scores combinados."""
     temporadas = list(temporadas)
     if set(dados) != {"M", "W"} or not temporadas or len(set(temporadas)) != len(temporadas):
@@ -207,7 +216,8 @@ def avaliar_temporadas_h2o(dados, temporadas, *, features, seed=42, max_models=2
                 raise ValueError(f"Treino/validação vazios: {categoria}/{ano}.")
             execucao = treinar_automl(treino, features=features, ano_previsao=ano,
                 seed=seed, max_models=max_models, n_folds=n_folds,
-                exclude_algos=exclude_algos, nome=f"exp8_{categoria}_{ano}")
+                exclude_algos=exclude_algos, nome=f"{nome}_{categoria}_{ano}",
+                include_algos=include_algos, max_runtime_secs_per_model=max_runtime_secs_per_model)
             try:
                 validacao["Pred"] = prever_leader(execucao["leader"], validacao, features=features)
                 validacao["Categoria"] = categoria
