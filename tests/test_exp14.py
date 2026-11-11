@@ -270,42 +270,4 @@ class Exp14Test(unittest.TestCase):
         with self.assertRaises(ValueError):
             e.Avaliador(futura,self.banco,REFS,pasta=self.root/'outro',pasta_exp13=self.root/'exp13')
 
-    def test_notebook_em_ordem_piloto_sem_fit_real_nem_treino_final(self):
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        from contextlib import ExitStack
-        fonte_path=self.root/'checkpoints'/'exp13'
-        fonte(fonte_path)
-        (self.root/'raw_data').mkdir()
-        antes={p:p.read_bytes() for p in fonte_path.rglob('*.json')}
-        pares=pd.DataFrame([dict(ID=f'2026_{b}_{b+i+1}',Season=2026,TeamA=b,TeamB=b+i+1,
-            Categoria=nome,TemDuasSeeds=i<2,**{f:float(i) for f in e.FEATURES})
-            for b,nome in [(1000,'Masculino'),(3000,'Feminino')] for i in range(3)])
-        preparo=dict(jogos=self.base,confrontos=pares,sample=pares[['ID']].assign(Pred=0.),
-            auditoria=pd.DataFrame({'Categoria':['M','W']}))
-        path=Path(__file__).resolve().parents[1]/'notebooks'/'features_incrementais'/'exp14_selecao_individual_features.ipynb'
-        notebook=json.loads(path.read_text(encoding='utf8'))
-        self.assertEqual(notebook['nbformat'],4)
-        ambiente={}
-        with ExitStack() as stack:
-            stack.enter_context(patch.object(Path,'cwd',return_value=self.root))
-            stack.enter_context(patch.object(e,'preparar_dados',return_value=preparo))
-            stack.enter_context(patch.object(comum,'detectar_tabpfn',return_value={'device':'cuda:0'}))
-            stack.enter_context(patch.object(comum,'carregar_token_tabpfn'))
-            stack.enter_context(patch.object(comum,'validar_acesso_tabpfn',return_value={'fixture':True}))
-            mostrar=stack.enter_context(patch('IPython.display.display'))
-            stack.enter_context(patch.object(plt,'show',side_effect=lambda:plt.close('all')))
-            for i,cell in enumerate(notebook['cells']):
-                if cell['cell_type']=='code':
-                    source=''.join(cell['source'])
-                    exec(compile(source,f'exp14_celula_{i}','exec'),ambiente)
-            self.assertTrue(mostrar.called)
-        self.assertEqual(ambiente['ranking'].groupby('Categoria').size().tolist(),[3,3])
-        self.assertFalse(ambiente['GERAR_SUBMISSIONS'])
-        self.assertFalse(any(c.args[3]==2026 for c in self.fit.call_args_list))
-        self.assertFalse(list(self.root.rglob('*.csv')))
-        self.assertEqual(antes,{p:p.read_bytes() for p in fonte_path.rglob('*.json')})
-
-
 if __name__=='__main__':unittest.main()

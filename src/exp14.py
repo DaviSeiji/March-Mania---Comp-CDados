@@ -331,10 +331,12 @@ def selecao_progressiva(avaliador, ident, *, ativar=True, max_removidas=10,
     return resultado
 
 
-def comparar_categorias(ranking):
-    """Features comuns e exclusivas nas mesmas posições Top 1/2/3 M/W."""
+def comparar_categorias(ranking, *, top_k=3):
+    """Features comuns e exclusivas nas mesmas posições Top K M/W."""
+    if isinstance(top_k,bool) or not isinstance(top_k,Integral) or top_k<1:
+        raise ValueError('top_k deve ser um inteiro positivo.')
     linhas=[]
-    for pos in [1,2,3]:
+    for pos in range(1,top_k+1):
         grupo = ranking.loc[ranking.Posicao.eq(pos)]
         if set(grupo.Categoria)!={'M','W'} or len(grupo)!=2:
             continue
@@ -346,14 +348,16 @@ def comparar_categorias(ranking):
     return pd.DataFrame(linhas)
 
 
-def gerar_submissions(avaliador, ranking, confrontos, sample, *, destino):
-    """Opcional: Top 1/2/3 com configuração e subconjunto próprios por M/W."""
+def gerar_submissions(avaliador, ranking, confrontos, sample, *, destino, top_k=3):
+    """Opcional: Top K com configuração e subconjunto próprios por M/W."""
+    if isinstance(top_k,bool) or not isinstance(top_k,Integral) or top_k<1:
+        raise ValueError('top_k deve ser um inteiro positivo.')
     if ranking.empty or not ranking.Metrica.eq('rmse').all():
         raise ValueError('Exp. 14 seleciona exclusivamente por RMSE ponderado.')
-    top=ranking.loc[ranking.Posicao.le(3)].copy()
-    esperado={(c,p) for c in ['M','W'] for p in [1,2,3]}
-    if len(top)!=6 or set(map(tuple,top[['Categoria','Posicao']].to_numpy()))!=esperado:
-        raise ValueError('Faltam três combinações completas por categoria.')
+    top=ranking.loc[ranking.Posicao.le(top_k)].copy()
+    esperado={(c,p) for c in ['M','W'] for p in range(1,top_k+1)}
+    if len(top)!=2*top_k or set(map(tuple,top[['Categoria','Posicao']].to_numpy()))!=esperado:
+        raise ValueError(f'Faltam {top_k} combinações completas por categoria.')
     previsoes,tempos,falhas={},{},[]
     for r in top.to_dict('records'):
         c=avaliador.candidatos[r['Configuracao']]
@@ -394,7 +398,7 @@ def gerar_submissions(avaliador, ranking, confrontos, sample, *, destino):
         comum.salvar_json(avaliador.pasta/'final'/'falhas.json',falhas)
         raise RuntimeError('Falhas no treino final; previsões concluídas preservadas no Exp. 14.')
     saidas,hashes=[],{}
-    for pos in [1,2,3]:
+    for pos in range(1,top_k+1):
         grupo=top.loc[top.Posicao.eq(pos)].set_index('Categoria')
         csv=confrontos[['ID']].copy().assign(Pred=0.)
         for ident in grupo.Candidato:
