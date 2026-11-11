@@ -16,6 +16,8 @@ AutogluonModels/
 checkpoints/exp11/
 checkpoints/exp12/
 checkpoints/exp13/
+checkpoints/exp14/
+checkpoints/exp15/
 
 # Credencial local do TabPFN; nunca versionar.
 /.env.tabpfn
